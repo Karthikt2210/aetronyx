@@ -1,0 +1,91 @@
+spec_version: "1"
+name: add-rate-limiting-to-auth-login
+intent: |
+  Add per-IP rate limiting to the POST /auth/login endpoint in a TypeScript/Express
+  application to mitigate credential stuffing attacks. Use a token bucket algorithm
+  allowing 5 attempts per IP per 60-second window. The 6th request within the window
+  must receive a 429 response with a Retry-After header indicating when the bucket resets.
+  Use the existing Redis instance for bucket storage. No new npm dependencies unless
+  explicitly approved at the schema-change gate.
+
+budget:
+  max_cost_usd: 3.00
+  max_iterations: 20
+  max_wall_time_minutes: 45
+  max_tokens: 500000
+
+acceptance_criteria:
+  - given: "no prior requests from IP 203.0.113.1 in the last 60 seconds"
+    when: "POST /auth/login is called 5 times from 203.0.113.1 within 60 seconds"
+    then: "all 5 requests proceed normally and return 200 or 401 based on credentials"
+
+  - given: "5 failed login attempts from IP 203.0.113.1 within the last 60 seconds"
+    when: "POST /auth/login is called a 6th time from 203.0.113.1"
+    then: "the response is 429 Too Many Requests with a Retry-After header set to the remaining window seconds"
+
+  - given: "IP 203.0.113.1 has been rate-limited"
+    when: "61 seconds elapse"
+    then: "POST /auth/login from 203.0.113.1 succeeds again as if no prior attempts exist"
+
+  - given: "rate limiting is active"
+    when: "POST /auth/login is called from a different IP 203.0.113.2"
+    then: "requests from 203.0.113.2 are not affected by 203.0.113.1's rate limit state"
+
+invariants:
+  - "The response shape of POST /auth/login for non-rate-limited requests MUST NOT change — existing clients must not require updates."
+  - "Passwords MUST continue to be hashed with bcrypt cost factor 12; the rate limiter MUST NOT short-circuit password verification."
+  - "The rate limiter MUST use the X-Forwarded-For header when the app is behind a trusted proxy, falling back to req.socket.remoteAddress."
+  - "Redis connection failures MUST NOT crash the auth endpoint — fail open with a warning log so auth remains available if Redis is down."
+
+out_of_scope:
+  - "Rate limiting on any endpoint other than POST /auth/login."
+  - "Distributed rate limiting across multiple Node.js processes (single-instance Redis is sufficient for v1)."
+  - "UI or dashboard changes to display rate limit status."
+  - "Email or Slack alerts when an IP is rate-limited."
+  - "Changing the User model or database schema."
+
+dependencies:
+  files:
+    - src/routes/auth.ts
+    - src/middleware/
+    - src/config/redis.ts
+  services:
+    - redis
+  apis: []
+
+test_contracts:
+  - name: rate-limit-acceptance-happy-path
+    command: "npm run test -- --testPathPattern=auth/rate-limit"
+    maps_to:
+      - "acceptance_criteria[0]"
+      - "acceptance_criteria[3]"
+
+  - name: rate-limit-429-response
+    command: "npm run test -- --testPathPattern=auth/rate-limit-exceeded"
+    maps_to:
+      - "acceptance_criteria[1]"
+
+  - name: rate-limit-window-reset
+    command: "npm run test -- --testPathPattern=auth/rate-limit-reset"
+    maps_to:
+      - "acceptance_criteria[2]"
+
+approval_gates:
+  - after: "planning"
+    required: true
+
+  - after: "schema_change"
+    required: true
+
+  - before: "pre_merge"
+    required: true
+
+routing_hint:
+  planning_model: "claude-opus-4"
+  execution_model: "claude-haiku-4-5"
+
+metadata:
+  language: typescript
+  framework: express
+  pillar: "2"
+  milestone: "M2-example"

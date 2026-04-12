@@ -1,0 +1,88 @@
+spec_version: "1"
+name: add-tests-for-price-calculator
+intent: |
+  Add a comprehensive Jest test suite for the calculateOrderTotal function in
+  src/utils/pricing.js, which currently has 0% test coverage. The function handles
+  discount codes, tiered pricing, tax calculation, and free-shipping thresholds.
+  It has 14 identifiable branches documented in comments but no tests. Tests must
+  achieve at least 90% branch coverage on the function, be deterministic, and run
+  in under 2 seconds total.
+
+budget:
+  max_cost_usd: 1.00
+  max_iterations: 10
+  max_wall_time_minutes: 20
+  max_tokens: 150000
+
+acceptance_criteria:
+  - given: "a cart with subtotal $120.00 and no discount code"
+    when: "calculateOrderTotal is called"
+    then: "the return value includes the correct tax (8.5%), free shipping (threshold $100), and total $130.20"
+
+  - given: "a cart with subtotal $60.00 and a valid 10% discount code SAVE10"
+    when: "calculateOrderTotal is called"
+    then: "the discount reduces the subtotal to $54.00, standard $5.99 shipping is applied, and tax is calculated on the discounted subtotal"
+
+  - given: "an expired discount code is passed"
+    when: "calculateOrderTotal is called"
+    then: "the function throws a DiscountExpiredError with code property set to the expired code string"
+
+  - given: "a null or undefined cart is passed"
+    when: "calculateOrderTotal is called"
+    then: "the function throws a TypeError with a descriptive message before attempting any calculation"
+
+invariants:
+  - "Tests MUST NOT modify src/utils/pricing.js — this is a test-addition task only, not a refactor."
+  - "All tests MUST be deterministic: no Date.now(), Math.random(), or network calls inside test bodies. Use jest.useFakeTimers() and jest.mock() where needed."
+  - "The existing test suite MUST continue to pass after the new tests are added — no regressions."
+
+out_of_scope:
+  - "Refactoring calculateOrderTotal even if the implementation has code smells."
+  - "Adding tests for any other function in src/utils/pricing.js."
+  - "Changing the test runner from Jest or the test configuration."
+  - "Achieving 100% coverage — 90% branch coverage is the target, not the floor."
+
+dependencies:
+  files:
+    - src/utils/pricing.js
+    - src/utils/pricing.test.js
+    - jest.config.js
+    - package.json
+  services: []
+  apis: []
+
+test_contracts:
+  - name: new-tests-pass
+    command: "npx jest src/utils/pricing.test.js --no-coverage"
+    maps_to:
+      - "acceptance_criteria[0]"
+      - "acceptance_criteria[1]"
+      - "acceptance_criteria[2]"
+      - "acceptance_criteria[3]"
+
+  - name: branch-coverage-gate
+    command: "npx jest src/utils/pricing.test.js --coverage --coverageThreshold='{\"global\":{\"branches\":90}}'"
+    maps_to:
+      - "invariants[1]"
+
+  - name: no-regression
+    command: "npx jest --passWithNoTests"
+    maps_to:
+      - "invariants[2]"
+
+approval_gates:
+  - after: "planning"
+    required: true
+
+  - before: "pre_merge"
+    required: true
+
+routing_hint:
+  planning_model: "claude-sonnet-4-6"
+  execution_model: "claude-haiku-4-5"
+
+metadata:
+  language: javascript
+  framework: jest
+  pillar: "2"
+  milestone: "M2-example"

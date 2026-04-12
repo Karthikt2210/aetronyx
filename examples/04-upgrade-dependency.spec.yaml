@@ -1,0 +1,97 @@
+spec_version: "1"
+name: upgrade-serde-to-2-0
+intent: |
+  Upgrade the serde and serde_json crates from 1.x to 2.0 in a Rust web service.
+  Serde 2.0 introduces breaking changes in its Deserialize derive macro — specifically,
+  fields annotated with #[serde(flatten)] and custom deserializers using MapAccess
+  require migration. All structs using these patterns must be updated. The upgrade
+  spans internal domain types, API request/response types, and config loading. The
+  compiled binary must produce byte-identical JSON output for all existing API responses.
+
+budget:
+  max_cost_usd: 4.00
+  max_iterations: 25
+  max_wall_time_minutes: 60
+  max_tokens: 600000
+
+acceptance_criteria:
+  - given: "Cargo.toml specifies serde = \"2.0\" and serde_json = \"2.0\""
+    when: "cargo build --release is run"
+    then: "the build succeeds with zero errors and zero warnings on the serde migration lint"
+
+  - given: "the upgraded binary is running"
+    when: "the full integration test suite is executed"
+    then: "all tests pass with the same assertions as before the upgrade"
+
+  - given: "the upgraded binary handles a known API request"
+    when: "POST /api/orders is called with the fixture payload in tests/fixtures/order_payload.json"
+    then: "the response body is byte-identical to tests/fixtures/order_response_expected.json"
+
+  - given: "config is loaded from config/settings.toml"
+    when: "the binary starts"
+    then: "all config fields deserialize correctly and the service reaches the ready state"
+
+invariants:
+  - "The public REST API response schemas MUST be byte-identical before and after the upgrade — no field renames, no type changes, no added/removed keys."
+  - "The Cargo.lock file MUST be committed after the upgrade so the exact resolved versions are reproducible in CI."
+  - "No use of serde 1.x compatibility shims or the serde1 feature flag — the migration must be clean."
+  - "The MSRV (minimum supported Rust version) in Cargo.toml MUST be updated to the value required by serde 2.0 if it has increased."
+
+out_of_scope:
+  - "Upgrading any crate other than serde and serde_json in this task."
+  - "Refactoring domain types for ergonomics beyond what the migration requires."
+  - "Changing the API surface, adding new endpoints, or modifying business logic."
+  - "Migrating the async runtime (tokio version stays unchanged)."
+
+dependencies:
+  files:
+    - Cargo.toml
+    - Cargo.lock
+    - src/types/
+    - src/api/
+    - src/config.rs
+    - tests/
+  services: []
+  apis: []
+
+test_contracts:
+  - name: cargo-build-clean
+    command: "cargo build --release 2>&1"
+    maps_to:
+      - "acceptance_criteria[0]"
+
+  - name: integration-suite
+    command: "cargo test --test integration -- --nocapture"
+    maps_to:
+      - "acceptance_criteria[1]"
+
+  - name: api-response-fixture
+    command: "cargo test --test api_contract -- test_order_response_shape"
+    maps_to:
+      - "acceptance_criteria[2]"
+
+  - name: config-deserialization
+    command: "cargo test --test config -- test_settings_load"
+    maps_to:
+      - "acceptance_criteria[3]"
+      - "invariants[0]"
+
+approval_gates:
+  - after: "planning"
+    required: true
+
+  - after: "schema_change"
+    required: true
+
+  - before: "pre_merge"
+    required: true
+
+routing_hint:
+  planning_model: "claude-opus-4"
+  execution_model: "claude-sonnet-4-6"
+
+metadata:
+  language: rust
+  framework: axum
+  pillar: "4"
+  milestone: "M2-example"

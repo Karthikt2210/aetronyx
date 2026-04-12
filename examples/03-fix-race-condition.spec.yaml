@@ -1,0 +1,81 @@
+spec_version: "1"
+name: fix-session-counter-race-condition
+intent: |
+  Fix a documented race condition in a Python Flask application where the in-memory
+  session request counter (app.session_counts dict) is read and written from multiple
+  gunicorn worker threads without a lock, causing lost updates and incorrect session
+  analytics. A reproducer test already exists at tests/test_race.py and fails
+  intermittently under pytest-xdist parallel execution. The fix must make the test pass
+  consistently across 100 runs without reducing throughput by more than 5%.
+
+budget:
+  max_cost_usd: 1.50
+  max_iterations: 12
+  max_wall_time_minutes: 25
+  max_tokens: 200000
+
+acceptance_criteria:
+  - given: "100 concurrent requests hit POST /api/session/increment from 10 threads"
+    when: "all requests complete"
+    then: "app.session_counts[session_id] equals exactly 100 — no lost increments"
+
+  - given: "the reproducer test tests/test_race.py::test_concurrent_increments is run 100 times"
+    when: "pytest runs with -n 4 (parallel workers)"
+    then: "the test passes on every single run with zero failures"
+
+  - given: "the fix is applied"
+    when: "a single-threaded benchmark of POST /api/session/increment runs 1000 times"
+    then: "p99 latency is within 5% of the pre-fix baseline recorded in tests/fixtures/baseline_latency.json"
+
+invariants:
+  - "The session_counts dict MUST remain in-process memory (no Redis, no DB) — the fix is a threading primitive, not an architecture change."
+  - "The REST API surface of POST /api/session/increment MUST NOT change — same request shape, same response shape, same status codes."
+  - "Python 3.11+ threading.Lock is the only allowed synchronization primitive — no third-party concurrency libraries."
+
+out_of_scope:
+  - "Migrating session storage to Redis or any external store."
+  - "Fixing any other race conditions in the codebase beyond app.session_counts."
+  - "Changing gunicorn worker configuration or deployment topology."
+  - "Adding distributed locking for multi-process scenarios."
+
+dependencies:
+  files:
+    - app/session.py
+    - app/__init__.py
+    - tests/test_race.py
+    - tests/fixtures/baseline_latency.json
+  services: []
+  apis: []
+
+test_contracts:
+  - name: race-reproducer
+    command: "pytest tests/test_race.py::test_concurrent_increments -n 4 --count=100 -v"
+    maps_to:
+      - "acceptance_criteria[1]"
+
+  - name: correctness-check
+    command: "pytest tests/test_race.py::test_increment_count_accuracy -v"
+    maps_to:
+      - "acceptance_criteria[0]"
+
+  - name: latency-regression
+    command: "pytest tests/test_race.py::test_latency_baseline -v"
+    maps_to:
+      - "acceptance_criteria[2]"
+
+approval_gates:
+  - after: "planning"
+    required: true
+
+  - before: "pre_merge"
+    required: true
+
+routing_hint:
+  planning_model: "claude-opus-4"
+  execution_model: "claude-haiku-4-5"
+
+metadata:
+  language: python
+  framework: flask
+  pillar: "2"
+  milestone: "M2-example"

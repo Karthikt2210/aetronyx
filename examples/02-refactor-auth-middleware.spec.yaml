@@ -1,0 +1,87 @@
+spec_version: "1"
+name: refactor-auth-middleware-go
+intent: |
+  Extract duplicated inline JWT authentication checks scattered across Go HTTP handler
+  functions in a Gin-based API into a single reusable middleware function. Every handler
+  currently calls verifyToken(r) directly; this must be replaced by a middleware that
+  wraps protected route groups. Behavior must be strictly preserved — no change to
+  response codes, error messages, or token verification logic. This is a pure structural
+  refactor with no feature additions.
+
+budget:
+  max_cost_usd: 2.00
+  max_iterations: 15
+  max_wall_time_minutes: 30
+  max_tokens: 300000
+
+acceptance_criteria:
+  - given: "a valid JWT token in the Authorization: Bearer header"
+    when: "any protected endpoint is called"
+    then: "the request proceeds and the handler receives the parsed claims via context"
+
+  - given: "an expired JWT token in the Authorization: Bearer header"
+    when: "any protected endpoint is called"
+    then: "the middleware returns 401 Unauthorized with body {\"error\":\"token expired\"} before the handler executes"
+
+  - given: "no Authorization header is present"
+    when: "any protected endpoint is called"
+    then: "the middleware returns 401 Unauthorized with body {\"error\":\"missing token\"} before the handler executes"
+
+  - given: "the middleware is applied"
+    when: "a public endpoint (e.g. GET /health, POST /auth/login) is called without a token"
+    then: "the request succeeds — public routes are not wrapped by the middleware"
+
+invariants:
+  - "The JWT signing secret source MUST NOT change — it must still be read from the AETRONYX_JWT_SECRET environment variable via the existing config package."
+  - "The parsed claims struct injected into context MUST use the same key constant (internal/auth.ClaimsContextKey) so all handlers that read claims require zero changes."
+  - "HTTP status codes and error response bodies for auth failures MUST be byte-for-byte identical to the pre-refactor behavior — existing API clients must not break."
+  - "Test coverage on internal/auth MUST NOT decrease after the refactor; the CI gate enforces this."
+
+out_of_scope:
+  - "Adding new authentication schemes (OAuth, API keys, session cookies)."
+  - "Changing the JWT library (continue using golang-jwt/jwt/v5)."
+  - "Modifying any handler's business logic, only the auth-check wiring."
+  - "Performance optimization of the token verification path."
+
+dependencies:
+  files:
+    - internal/auth/
+    - internal/server/routes.go
+    - internal/server/handlers/
+  services: []
+  apis: []
+
+test_contracts:
+  - name: auth-middleware-unit
+    command: "go test ./internal/auth/... -run TestMiddleware -v"
+    maps_to:
+      - "acceptance_criteria[0]"
+      - "acceptance_criteria[1]"
+      - "acceptance_criteria[2]"
+
+  - name: auth-middleware-integration
+    command: "go test ./test/integration/... -run TestAuthRoutes -v"
+    maps_to:
+      - "acceptance_criteria[3]"
+
+  - name: coverage-gate
+    command: "go test ./internal/auth/... -coverprofile=coverage.out && go tool cover -func=coverage.out"
+    maps_to:
+      - "invariants[3]"
+
+approval_gates:
+  - after: "planning"
+    required: true
+
+  - before: "pre_merge"
+    required: true
+
+routing_hint:
+  planning_model: "claude-opus-4"
+  execution_model: "claude-sonnet-4-6"
+
+metadata:
+  language: go
+  framework: gin
+  pillar: "2"
+  milestone: "M2-example"

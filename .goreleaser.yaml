@@ -1,0 +1,51 @@
+version: 2
+
+project_name: aetronyx
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: aetronyx-darwin-arm64
+    binary: aetronyx
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: aetronyx
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: karthikcodes
+    name: aetronyx
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"

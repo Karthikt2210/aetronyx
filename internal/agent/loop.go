@@ -2,279 +2,280 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/karthikcodes/aetronyx/internal/audit"
 	"github.com/karthikcodes/aetronyx/internal/llm"
+	"github.com/karthikcodes/aetronyx/internal/repo"
 	"github.com/karthikcodes/aetronyx/internal/spec"
-	"github.com/karthikcodes/aetronyx/internal/store"
 )
 
-const (
-	writeFileTool = "write_file"
-	defaultModel  = "claude-haiku-4-5-20251001"
-)
+const defaultModel = "claude-haiku-4-5-20251001"
 
-// writeFileToolSchema is the JSON Schema for the write_file tool.
-var writeFileToolSchema = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "path": {
-      "type": "string",
-      "description": "Relative path within the workspace where the file should be written."
-    },
-    "content": {
-      "type": "string",
-      "description": "Full content to write to the file."
-    }
-  },
-  "required": ["path", "content"]
-}`)
-
-// Runner executes a single run through the M1 loop.
+// Runner executes the M2 5-phase iterative loop for a single run.
 type Runner struct {
-	engine *Engine
+	engine     *Engine
+	dispatcher *ToolDispatcher
 }
 
-// Run executes the 7-step M1 loop for the given runID and spec.
+// Run is the M2 entry point: blast-radius → planning → iterating → verifying → termination.
 func (r *Runner) Run(ctx context.Context, runID string, s *spec.Spec) error {
-	// Wire up signal cancellation.
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	blastSummary, err := r.phaseBlastRadius(ctx, runID, s)
+	if err != nil {
+		return r.fail(ctx, runID, err)
+	}
+	if ctx.Err() != nil {
+		return r.cancel(ctx, runID)
+	}
+
+	plan, cb, err := r.phasePlanning(ctx, runID, s, blastSummary)
+	if err != nil {
+		return r.fail(ctx, runID, err)
+	}
+	if ctx.Err() != nil {
+		return r.cancel(ctx, runID)
+	}
+
+	return r.phaseIterate(ctx, runID, s, plan, cb)
+}
+
+// phaseBlastRadius builds the repo graph and computes the blast radius report.
+// Skipped when Dependencies.Files is empty; returns a text summary on success.
+func (r *Runner) phaseBlastRadius(ctx context.Context, runID string, s *spec.Spec) (string, error) {
+	if len(s.Dependencies.Files) == 0 {
+		return "", nil
+	}
 	e := r.engine
+	if err := e.store.UpdateRunStatus(ctx, runID, StateBlastRadius); err != nil {
+		return "", fmt.Errorf("blast_radius transition: %w", err)
+	}
 
-	// ── Step 1: Transition to planning, emit run.started. ────────────────────
+	g, err := repo.Build(e.cfg.Workspace)
+	if err != nil {
+		return "", fmt.Errorf("repo.Build: %w", err)
+	}
+	e.graph = g
+
+	var testCmds []string
+	for _, tc := range s.TestContracts {
+		testCmds = append(testCmds, tc.Command)
+	}
+	report := repo.ComputeBlastRadius(g, s.Dependencies.Files, testCmds)
+
+	if artefactErr := writeRunArtefact(e.dataDir(), runID, "blast-radius.json", encodeJSON(report)); artefactErr != nil {
+		slog.Warn("blast-radius.json write failed", "run_id", runID, "err", artefactErr)
+	}
+
+	_ = e.audit.Emit(ctx, runID, audit.EventBlastRadiusComputed, audit.Payload{
+		"direct_count":   report.Stats.DirectCount,
+		"importer_count": report.Stats.ImporterCount,
+		"test_count":     report.Stats.TestCount,
+	})
+	return repo.FormatText(report), nil
+}
+
+// phasePlanning loads AGENTS.md, calls the planning model, and writes plan.md.
+func (r *Runner) phasePlanning(ctx context.Context, runID string, s *spec.Spec, blastSummary string) (*Plan, *ContextBuilder, error) {
+	e := r.engine
 	if err := e.store.UpdateRunStatus(ctx, runID, StatePlanning); err != nil {
-		return r.fail(ctx, runID, fmt.Errorf("transition to planning: %w", err))
+		return nil, nil, fmt.Errorf("planning transition: %w", err)
 	}
-	if err := e.audit.Emit(ctx, runID, audit.EventRunStarted, audit.Payload{
-		"run_id": runID,
-	}); err != nil {
-		return r.fail(ctx, runID, err)
+	if err := e.audit.Emit(ctx, runID, audit.EventRunStarted, audit.Payload{"run_id": runID}); err != nil {
+		return nil, nil, fmt.Errorf("run.started emit: %w", err)
 	}
 
-	// ── Step 2: Create iteration row, emit iteration.started. ────────────────
-	iterID := store.MustNewID()
-	model := e.cfg.Model
-	if model == "" {
-		model = defaultModel
-	}
+	agentsMD := loadAgentsMD(e.cfg.Workspace)
+	planModel := e.planningModel()
+	req := BuildPlanPrompt(s, blastSummary, agentsMD)
+	req.Model = planModel
 
-	iterRow := store.IterationRow{
-		ID:         iterID,
-		RunID:      runID,
-		IterNumber: 0,
-		StartedAt:  time.Now().UTC().UnixMilli(),
-		Model:      model,
-		Provider:   e.adapter.Name(),
-		Status:     "running",
-	}
-	if err := e.store.CreateIteration(ctx, iterRow); err != nil {
-		return r.fail(ctx, runID, fmt.Errorf("create iteration: %w", err))
-	}
-	if err := e.audit.Emit(ctx, runID, audit.EventIterationStarted, audit.Payload{
-		"run_id":      runID,
-		"iter_number": 0,
-		"model":       model,
-		"provider":    e.adapter.Name(),
-	}); err != nil {
-		return r.fail(ctx, runID, err)
-	}
-
-	// ── Step 3: Build the LLM request. ───────────────────────────────────────
-	if err := e.store.UpdateRunStatus(ctx, runID, StateRunning); err != nil {
-		return r.fail(ctx, runID, fmt.Errorf("transition to running: %w", err))
-	}
-
-	req := buildRequest(model, e.cfg.Workspace, s)
-
-	// ── Step 4: Call the LLM adapter. ────────────────────────────────────────
-	reqPayload := audit.Payload{
-		"provider":    e.adapter.Name(),
-		"model":       model,
-		"prompt_hash": hashString(req.System + req.Messages[0].Content[0].Text),
-	}
-	if err := e.audit.Emit(ctx, runID, audit.EventLLMRequest, reqPayload); err != nil {
-		return r.fail(ctx, runID, err)
-	}
-
+	_ = e.audit.Emit(ctx, runID, audit.EventLLMRequest, audit.Payload{
+		"provider": e.adapter.Name(), "model": planModel, "phase": "planning",
+	})
 	resp, err := e.adapter.Complete(ctx, req)
 	if err != nil {
-		return r.fail(ctx, runID, fmt.Errorf("LLM call: %w", err))
+		return nil, nil, fmt.Errorf("planning LLM: %w", err)
 	}
-
-	if err := e.audit.Emit(ctx, runID, audit.EventLLMResponse, audit.Payload{
+	_ = e.audit.Emit(ctx, runID, audit.EventLLMResponse, audit.Payload{
 		"provider":      e.adapter.Name(),
-		"model":         model,
-		"response_hash": hashString(string(resp.Raw)),
+		"model":         planModel,
 		"input_tokens":  resp.InputTokens,
 		"output_tokens": resp.OutputTokens,
-		"cost_usd":      resp.CostUSD,
-	}); err != nil {
-		return r.fail(ctx, runID, err)
+	})
+
+	plan := parsePlanFromResponse(resp, s.Intent)
+	plan.Model = planModel
+	planMD := renderPlanMD(plan)
+	if artefactErr := writeRunArtefact(e.dataDir(), runID, "plan.md", []byte(planMD)); artefactErr != nil {
+		slog.Warn("plan.md write failed", "run_id", runID, "err", artefactErr)
 	}
 
-	if err := e.store.UpdateRunCost(ctx, runID, resp.CostUSD, resp.InputTokens, resp.OutputTokens); err != nil {
-		slog.Warn("UpdateRunCost failed", "run_id", runID, "err", err)
+	_ = e.audit.Emit(ctx, runID, audit.EventIterationStarted, audit.Payload{
+		"run_id": runID, "iter_number": 0, "phase": "planning",
+		"model": planModel, "provider": e.adapter.Name(),
+	})
+
+	maxTok := s.Budget.MaxTokens
+	if maxTok == 0 {
+		maxTok = 100_000
+	}
+	cb := NewContextBuilder(maxTok)
+	cb.Add("spec", fmt.Sprintf("Name: %s\nIntent: %s", s.Name, s.Intent))
+	cb.Add("plan", planMD)
+	if agentsMD != "" {
+		cb.Add("agents_instructions", agentsMD)
+	}
+	return plan, cb, nil
+}
+
+// phaseIterate runs the iteration/verification loop until pass, halt, or error.
+func (r *Runner) phaseIterate(ctx context.Context, runID string, s *spec.Spec, plan *Plan, cb *ContextBuilder) error {
+	e := r.engine
+	maxIters := e.cfg.MaxIterations
+	if s.Budget.MaxIterations > 0 {
+		maxIters = s.Budget.MaxIterations
+	}
+	if maxIters == 0 {
+		maxIters = 1
 	}
 
-	// ── Step 5: Handle tool_use write_file. ──────────────────────────────────
-	for _, block := range resp.Content {
-		if block.Type != "tool_use" || block.ToolUse == nil {
-			continue
-		}
-		if block.ToolUse.Name != writeFileTool {
-			continue
-		}
+	var deadline time.Time
+	if s.Budget.MaxWallTimeMins > 0 {
+		deadline = time.Now().Add(time.Duration(s.Budget.MaxWallTimeMins) * time.Minute)
+	}
 
-		var params struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
+	for iter := 1; iter <= maxIters; iter++ {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			return r.haltTime(ctx, runID)
 		}
-		if err := json.Unmarshal(block.ToolUse.Input, &params); err != nil {
-			return r.fail(ctx, runID, fmt.Errorf("parse write_file params: %w", err))
+		if ctx.Err() != nil {
+			return r.cancel(ctx, runID)
 		}
-
-		if err := ValidatePath(e.cfg.Workspace, params.Path); err != nil {
+		if err := r.runOneIteration(ctx, runID, iter, s, plan, cb); err != nil {
 			return r.fail(ctx, runID, err)
 		}
-
-		// Compute before-hash (may not exist yet).
-		beforeHash := fileHashOrEmpty(e.cfg.Workspace, params.Path)
-
-		if err := WriteFile(e.cfg.Workspace, params.Path, params.Content); err != nil {
-			return r.fail(ctx, runID, fmt.Errorf("write file: %w", err))
+		passed, feedback, vErr := r.phaseVerify(ctx, runID, s)
+		if vErr != nil {
+			return r.fail(ctx, runID, vErr)
 		}
-
-		afterHash := hashString(params.Content)
-		bytesAdded := len(params.Content)
-		bytesRemoved := 0
-
-		if err := e.audit.Emit(ctx, runID, audit.EventFileWrite, audit.Payload{
-			"path":          params.Path,
-			"before_hash":   beforeHash,
-			"after_hash":    afterHash,
-			"bytes_added":   bytesAdded,
-			"bytes_removed": bytesRemoved,
-		}); err != nil {
-			return r.fail(ctx, runID, err)
+		if passed {
+			return r.terminate(ctx, runID, StateCompleted)
 		}
+		cb.Add(fmt.Sprintf("test_feedback_%d", iter), feedback)
+	}
+	return r.terminate(ctx, runID, StateHaltedMaxIters)
+}
 
-		fcID := store.MustNewID()
-		var bh *string
-		if beforeHash != "" {
-			bh = &beforeHash
-		}
-		fc := store.FileChange{
-			ID:           fcID,
-			RunID:        runID,
-			IterationID:  iterID,
-			Path:         params.Path,
-			BeforeHash:   bh,
-			AfterHash:    afterHash,
-			BytesAdded:   bytesAdded,
-			BytesRemoved: bytesRemoved,
-		}
-		if err := e.store.InsertFileChange(ctx, fc); err != nil {
-			return r.fail(ctx, runID, fmt.Errorf("insert file_change: %w", err))
-		}
+// terminate transitions the run to a terminal state and emits the corresponding event.
+func (r *Runner) terminate(ctx context.Context, runID, status string) error {
+	e := r.engine
+	_ = e.store.CompleteRun(ctx, runID, status, 0, 0, status)
+	eventType := audit.EventRunFailed
+	switch status {
+	case StateCompleted:
+		eventType = audit.EventRunCompleted
+	case StateCancelled:
+		eventType = audit.EventRunCancelled
 	}
-
-	// ── Step 6: Mark iteration completed. ────────────────────────────────────
-	if err := e.store.CompleteIteration(ctx, iterID, "completed",
-		resp.InputTokens, resp.OutputTokens, resp.CostUSD); err != nil {
-		slog.Warn("CompleteIteration failed", "iter_id", iterID, "err", err)
-	}
-	if err := e.audit.Emit(ctx, runID, audit.EventIterationCompleted, audit.Payload{
-		"run_id":        runID,
-		"iter_number":   0,
-		"input_tokens":  resp.InputTokens,
-		"output_tokens": resp.OutputTokens,
-		"cost_usd":      resp.CostUSD,
-	}); err != nil {
-		return r.fail(ctx, runID, err)
-	}
-
-	// ── Step 7: Mark run completed. ──────────────────────────────────────────
-	if err := e.store.CompleteRun(ctx, runID, StateCompleted, resp.CostUSD, 1, "success"); err != nil {
-		return r.fail(ctx, runID, fmt.Errorf("complete run: %w", err))
-	}
-	if err := e.audit.Emit(ctx, runID, audit.EventRunCompleted, audit.Payload{
-		"run_id":      runID,
-		"total_cost":  resp.CostUSD,
-		"total_iters": 1,
-	}); err != nil {
-		slog.Warn("run.completed emit failed", "run_id", runID, "err", err)
-	}
-
-	slog.Info("run completed", "run_id", runID, "cost_usd", resp.CostUSD)
+	_ = e.audit.Emit(ctx, runID, eventType, audit.Payload{"run_id": runID, "status": status})
+	slog.Info("run terminal", "run_id", runID, "status", status)
 	return nil
 }
 
-// fail transitions the run to failed state and emits run.failed.
+// fail transitions the run to StateFailed and emits run.failed.
 func (r *Runner) fail(ctx context.Context, runID string, cause error) error {
-	e := r.engine
-	if err := e.store.UpdateRunStatus(ctx, runID, StateFailed); err != nil {
-		slog.Warn("UpdateRunStatus failed→failed", "run_id", runID, "err", err)
-	}
-	_ = e.audit.Emit(ctx, runID, audit.EventRunFailed, audit.Payload{
-		"run_id": runID,
-		"error":  cause.Error(),
+	_ = r.engine.store.UpdateRunStatus(ctx, runID, StateFailed)
+	_ = r.engine.audit.Emit(ctx, runID, audit.EventRunFailed, audit.Payload{
+		"run_id": runID, "error": cause.Error(),
 	})
 	return cause
 }
 
-// buildRequest constructs the LLM request for the M1 single-shot loop.
-func buildRequest(model, workspace string, s *spec.Spec) llm.Request {
-	system := fmt.Sprintf(
-		"You are an autonomous coding agent. Workspace root: %s\n\n"+
-			"Use the write_file tool to create or modify files. "+
-			"Only write files within the workspace. "+
-			"Complete the task described in the intent below in a single tool call.",
-		workspace,
-	)
-
-	userMsg := llm.Message{
-		Role: "user",
-		Content: []llm.ContentBlock{{
-			Type: "text",
-			Text: fmt.Sprintf("Intent: %s", s.Intent),
-		}},
-	}
-
-	return llm.Request{
-		Model:     model,
-		System:    system,
-		Messages:  []llm.Message{userMsg},
-		MaxTokens: 4096,
-		Tools: []llm.Tool{{
-			Name:        writeFileTool,
-			Description: "Write content to a file at the given relative path within the workspace.",
-			InputSchema: writeFileToolSchema,
-		}},
-	}
+// cancel transitions the run to StateCancelled and emits run.cancelled.
+func (r *Runner) cancel(ctx context.Context, runID string) error {
+	_ = r.engine.store.UpdateRunStatus(ctx, runID, StateCancelled)
+	_ = r.engine.audit.Emit(ctx, runID, audit.EventRunCancelled, audit.Payload{"run_id": runID})
+	return context.Canceled
 }
 
-// hashString returns sha256 hex of s.
-func hashString(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return fmt.Sprintf("%x", h)
+// haltTime transitions to StateHaltedMaxTime when wall time is exceeded.
+func (r *Runner) haltTime(ctx context.Context, runID string) error {
+	_ = r.engine.store.UpdateRunStatus(ctx, runID, StateHaltedMaxTime)
+	slog.Warn("run halted: max wall time exceeded", "run_id", runID)
+	return nil
 }
 
-// fileHashOrEmpty returns the sha256 of the file at workspace/relPath, or "" if not found.
-func fileHashOrEmpty(workspace, relPath string) string {
-	path := workspace + "/" + relPath
-	b, err := os.ReadFile(path)
+// parsePlanFromResponse extracts a Plan from an LLM response; falls back to a single-step plan.
+func parsePlanFromResponse(resp *llm.Response, intent string) *Plan {
+	for _, block := range resp.Content {
+		if block.Type == "text" && block.Text != "" {
+			if p, err := ParsePlanResponse(block.Text); err == nil {
+				return p
+			}
+		}
+	}
+	return defaultPlan(intent)
+}
+
+// writeRunArtefact writes data atomically to <dataDir>/runs/<runID>/<name>.
+func writeRunArtefact(dataDir, runID, name string, data []byte) error {
+	dir := filepath.Join(dataDir, "runs", runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	dst := filepath.Join(dir, name)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	return os.Rename(tmp, dst)
+}
+
+// loadAgentsMD reads AGENTS.md from workspace root and .aetronyx overlay.
+func loadAgentsMD(workspace string) string {
+	var parts []string
+	for _, rel := range []string{"AGENTS.md", filepath.Join(".aetronyx", "AGENTS.md")} {
+		b, err := os.ReadFile(filepath.Join(workspace, rel))
+		if err == nil && len(b) > 0 {
+			parts = append(parts, string(b))
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// encodeJSON serialises v to indented JSON; returns "{}" on error.
+func encodeJSON(v any) []byte {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return ""
+		return []byte("{}")
 	}
-	return hashString(string(b))
+	return b
+}
+
+// renderPlanMD converts a Plan to a human-readable Markdown string.
+func renderPlanMD(p *Plan) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "# Plan (model: %s)\n\n", p.Model)
+	for i, step := range p.Steps {
+		fmt.Fprintf(&sb, "## Step %d\n**Goal:** %s\n", i+1, step.Goal)
+		if len(step.FilesTouched) > 0 {
+			fmt.Fprintf(&sb, "**Files:** %s\n", strings.Join(step.FilesTouched, ", "))
+		}
+		if step.VerifyCommand != "" {
+			fmt.Fprintf(&sb, "**Verify:** `%s`\n", step.VerifyCommand)
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }

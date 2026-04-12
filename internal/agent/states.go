@@ -1,28 +1,55 @@
-// Package agent implements the M1 single-shot agent loop state machine.
+// Package agent implements the M2 iterative agent loop state machine.
 package agent
 
 import "fmt"
 
 // Run state constants — must match values stored in the runs table.
 const (
+	// M1 states (kept for backward compat).
 	StateCreated   = "created"
 	StatePlanning  = "planning"
-	StateRunning   = "running"
+	StateRunning   = "running" // M1 compat — use StateIterating in M2
 	StateCompleted = "completed"
 	StateFailed    = "failed"
 	StateCancelled = "cancelled"
+
+	// M2 states.
+	StateBlastRadius    = "blast_radius"
+	StateIterating      = "iterating"
+	StateVerifying      = "verifying"
+	StateHaltedMaxIters = "halted_max_iters"
+	StateHaltedMaxTime  = "halted_max_time"
 )
 
-// validTransitions is the adjacency map for the M1 state machine.
-// Edges are one-directional. Every legal (from→to) pair is listed.
+// validTransitions is the adjacency map for the M2 state machine.
+// M1 edges are preserved for backward compatibility.
 var validTransitions = map[string][]string{
-	StateCreated:  {StatePlanning, StateCancelled},
-	StatePlanning: {StateRunning, StateFailed, StateCancelled},
-	StateRunning:  {StateCompleted, StateFailed, StateCancelled},
+	// M1 compat edges.
+	StateRunning: {StateCompleted, StateFailed, StateCancelled},
+
+	// M2 edges.
+	StateCreated: {
+		StateBlastRadius, StatePlanning, StateCancelled,
+	},
+	StateBlastRadius: {
+		StatePlanning, StateFailed, StateCancelled,
+	},
+	StatePlanning: {
+		StateIterating, StateRunning, StateFailed, StateCancelled,
+	},
+	StateIterating: {
+		StateVerifying, StateHaltedMaxIters, StateHaltedMaxTime, StateFailed, StateCancelled,
+	},
+	StateVerifying: {
+		StateIterating, StateCompleted, StateFailed, StateCancelled,
+	},
+
 	// Terminal states have no outbound edges.
-	StateCompleted: {},
-	StateFailed:    {},
-	StateCancelled: {},
+	StateCompleted:      {},
+	StateFailed:         {},
+	StateCancelled:      {},
+	StateHaltedMaxIters: {},
+	StateHaltedMaxTime:  {},
 }
 
 // ValidTransitions returns a copy of the state transition graph.

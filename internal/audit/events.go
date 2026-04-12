@@ -1,21 +1,25 @@
 package audit
 
-// M1 audit event type constants as defined in §6.2 of the master architecture doc.
+// Audit event type constants as defined in §6.2 of the master architecture doc.
 const (
-	EventChainGenesis       = "chain.genesis"
-	EventRunCreated         = "run.created"
-	EventRunStarted         = "run.started"
-	EventRunCompleted       = "run.completed"
-	EventRunFailed          = "run.failed"
-	EventIterationStarted   = "iteration.started"
-	EventIterationCompleted = "iteration.completed"
-	EventIterationFailed    = "iteration.failed"
-	EventLLMRequest         = "llm.request"
-	EventLLMResponse        = "llm.response"
-	EventFileRead           = "file.read"
-	EventFileWrite          = "file.write"
-	EventSpecValidated      = "spec.validated"
-	EventSpecRejected       = "spec.rejected"
+	EventChainGenesis          = "chain.genesis"
+	EventRunCreated            = "run.created"
+	EventRunStarted            = "run.started"
+	EventRunCompleted          = "run.completed"
+	EventRunFailed             = "run.failed"
+	EventRunCancelled          = "run.cancelled"
+	EventIterationStarted      = "iteration.started"
+	EventIterationCompleted    = "iteration.completed"
+	EventIterationFailed       = "iteration.failed"
+	EventLLMRequest            = "llm.request"
+	EventLLMResponse           = "llm.response"
+	EventFileRead              = "file.read"
+	EventFileWrite             = "file.write"
+	EventSpecValidated         = "spec.validated"
+	EventSpecRejected          = "spec.rejected"
+	EventBlastRadiusComputed   = "blast_radius.computed"
+	EventToolCall              = "tool.call"
+	EventToolResult            = "tool.result"
 )
 
 // Actor values for audit events.

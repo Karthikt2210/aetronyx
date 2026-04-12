@@ -129,9 +129,10 @@ func (e *Engine) prevHash(ctx context.Context, runID string) ([32]byte, error) {
 func actorForEventType(eventType string) string {
 	switch eventType {
 	case EventChainGenesis, EventRunCreated, EventRunStarted, EventRunCompleted,
-		EventRunFailed, EventIterationStarted, EventIterationCompleted,
+		EventRunFailed, EventRunCancelled, EventIterationStarted, EventIterationCompleted,
 		EventIterationFailed, EventLLMRequest, EventLLMResponse,
-		EventFileRead, EventFileWrite, EventSpecValidated, EventSpecRejected:
+		EventFileRead, EventFileWrite, EventSpecValidated, EventSpecRejected,
+		EventBlastRadiusComputed, EventToolCall, EventToolResult:
 		return ActorAgent
 	default:
 		return ActorSystem

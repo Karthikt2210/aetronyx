@@ -6,28 +6,35 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/karthikcodes/aetronyx/internal/audit"
 	"github.com/karthikcodes/aetronyx/internal/llm"
+	"github.com/karthikcodes/aetronyx/internal/repo"
 	"github.com/karthikcodes/aetronyx/internal/spec"
 	"github.com/karthikcodes/aetronyx/internal/store"
 )
 
 // Config holds per-run engine configuration.
 type Config struct {
-	Workspace     string
-	MaxIterations int    // 1 in M1
-	Model         string // default model to use
-	SpecPath      string // absolute path to the spec file
+	Workspace      string
+	MaxIterations  int    // 1 in M1; spec budget takes precedence if set
+	Model          string // default model (M1 compat)
+	DefaultModel   string // fallback model when routing hints are absent
+	PlanningModel  string // model used for the planning phase
+	ExecutionModel string // model used for iteration
+	SpecPath       string // absolute path to the spec file
+	DataDir        string // root for run artefacts; defaults to <workspace>/.aetronyx
 }
 
-// Engine orchestrates the M1 agent loop.
+// Engine orchestrates the M2 iterative agent loop.
 type Engine struct {
 	store   *store.Store
 	audit   *audit.Engine
 	adapter llm.Adapter
 	cfg     Config
+	graph   *repo.Graph // lazily built during blast-radius phase
 }
 
 // New creates an Engine. All dependencies must be non-nil.
@@ -38,6 +45,41 @@ func New(s *store.Store, a *audit.Engine, adapter llm.Adapter, cfg Config) *Engi
 	return &Engine{store: s, audit: a, adapter: adapter, cfg: cfg}
 }
 
+// dataDir returns the resolved data directory, defaulting to <workspace>/.aetronyx.
+func (e *Engine) dataDir() string {
+	if e.cfg.DataDir != "" {
+		return e.cfg.DataDir
+	}
+	return filepath.Join(e.cfg.Workspace, ".aetronyx")
+}
+
+// planningModel returns the model ID for the planning phase.
+func (e *Engine) planningModel() string {
+	if e.cfg.PlanningModel != "" {
+		return e.cfg.PlanningModel
+	}
+	return e.resolveDefaultModel()
+}
+
+// executionModel returns the model ID for iteration.
+func (e *Engine) executionModel() string {
+	if e.cfg.ExecutionModel != "" {
+		return e.cfg.ExecutionModel
+	}
+	return e.resolveDefaultModel()
+}
+
+// resolveDefaultModel returns the best available default model ID.
+func (e *Engine) resolveDefaultModel() string {
+	if e.cfg.DefaultModel != "" {
+		return e.cfg.DefaultModel
+	}
+	if e.cfg.Model != "" {
+		return e.cfg.Model
+	}
+	return defaultModel
+}
+
 // Run executes the spec and blocks until the run reaches a terminal state.
 func (e *Engine) Run(ctx context.Context, s *spec.Spec) error {
 	runID, err := e.createRun(ctx, s)
@@ -45,7 +87,9 @@ func (e *Engine) Run(ctx context.Context, s *spec.Spec) error {
 		return fmt.Errorf("Engine.Run create: %w", err)
 	}
 
-	runner := &Runner{engine: e}
+	log := slog.With("run_id", runID)
+	dispatcher := NewToolDispatcher(e.cfg.Workspace, log)
+	runner := &Runner{engine: e, dispatcher: dispatcher}
 	if runErr := runner.Run(ctx, runID, s); runErr != nil {
 		slog.Error("run failed", "run_id", runID, "err", runErr)
 		return runErr

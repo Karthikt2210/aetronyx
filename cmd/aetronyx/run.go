@@ -1,13 +1,18 @@
 package aetronyx
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/karthikcodes/aetronyx/internal/agent"
 	"github.com/karthikcodes/aetronyx/internal/audit"
+	"github.com/karthikcodes/aetronyx/internal/llm"
+	"github.com/karthikcodes/aetronyx/internal/llm/anthropic"
 	"github.com/karthikcodes/aetronyx/internal/spec"
 	"github.com/karthikcodes/aetronyx/internal/store"
 )
@@ -74,22 +79,68 @@ var runCmd = &cobra.Command{
 		}
 		defer st.Close()
 
-		// TODO(M1): Create audit engine once store implements audit.StoreWriter interface
-		// auditEngine := audit.New(st, privKey)
+		// Load or generate Ed25519 keypair
+		privKey, _, err := audit.LoadOrGenerate(dataDir)
+		if err != nil {
+			return fmt.Errorf("failed to load or generate keypair: %w", err)
+		}
 
-		// TODO(M1): Create agent engine and run the loop
-		// For now, just log that we're ready
-		logger.Info("run ready",
-			"spec", s.Name,
-			"workspace", ws,
-		)
+		// Create audit engine with store adapter
+		storeAdapter := agent.NewStoreAuditAdapter(st)
+		auditEngine := audit.New(storeAdapter, privKey)
 
-		// Placeholder: emit a run created event and exit
-		// This will be replaced by the actual agent loop in M1
+		// Create or select LLM adapter
+		adapter, err := selectAdapter(cfg, logger)
+		if err != nil {
+			return fmt.Errorf("failed to select adapter: %w", err)
+		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "spec execution not yet implemented\n")
-		return &ExitError{Code: 1}
+		// Create agent engine
+		engineCfg := agent.Config{
+			Workspace:      ws,
+			MaxIterations:  s.Budget.MaxIterations,
+			DefaultModel:   defaultModelForAdapter(adapter),
+			PlanningModel:  s.RoutingHint.PlanningModel,
+			ExecutionModel: s.RoutingHint.ExecutionModel,
+			SpecPath:       expanded,
+			DataDir:        dataDir,
+		}
+		agentEngine := agent.New(st, auditEngine, adapter, engineCfg)
+
+		// Run the loop
+		ctx := context.Background()
+		if err := agentEngine.Run(ctx, s); err != nil {
+			logger.Error("run failed", "error", err)
+			return err
+		}
+
+		logger.Info("run completed", "spec", s.Name)
+		return nil
 	},
+}
+
+// selectAdapter creates an LLM adapter based on configuration and environment.
+// Priority: env-selected model type > config defaults > Anthropic fallback
+func selectAdapter(cfg interface{ /* config.Config */ }, logger *slog.Logger) (llm.Adapter, error) {
+	// For now, default to Anthropic. In M5, this will be expanded to support
+	// provider routing via RoutingHint and environment configuration.
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		logger.Warn("ANTHROPIC_API_KEY not set, adapter may fail at runtime")
+	}
+	return anthropic.New(apiKey), nil
+}
+
+// defaultModelForAdapter returns a sensible default model for the given adapter.
+func defaultModelForAdapter(adapter llm.Adapter) string {
+	switch adapter.Name() {
+	case "openai":
+		return "gpt-4.1"
+	case "ollama":
+		return "llama2"
+	default:
+		return "claude-opus-4-6"
+	}
 }
 
 func init() {

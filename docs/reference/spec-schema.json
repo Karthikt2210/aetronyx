@@ -1,0 +1,195 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "acceptance_criteria": {
+      "description": "List of testable Given-When-Then conditions",
+      "items": {
+        "properties": {
+          "given": {
+            "description": "The initial context or state",
+            "type": "string"
+          },
+          "then": {
+            "description": "The expected outcome",
+            "type": "string"
+          },
+          "when": {
+            "description": "The action or condition being tested",
+            "type": "string"
+          }
+        },
+        "required": [
+          "given",
+          "when",
+          "then"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "approval_gates": {
+      "description": "Checkpoints requiring human approval during execution",
+      "items": {
+        "properties": {
+          "after": {
+            "description": "Phase after which approval is required",
+            "type": "string"
+          },
+          "before": {
+            "description": "Phase before which approval is required",
+            "type": "string"
+          },
+          "required": {
+            "description": "Whether approval is mandatory",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "budget": {
+      "description": "Resource constraints and limits for execution",
+      "properties": {
+        "max_cost_usd": {
+          "description": "Maximum cost in USD for the entire run",
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "number"
+        },
+        "max_iterations": {
+          "description": "Maximum number of iterations allowed",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_tokens": {
+          "description": "Maximum tokens allowed for LLM calls",
+          "maximum": 10000000,
+          "minimum": 1000,
+          "type": "integer"
+        },
+        "max_wall_time_minutes": {
+          "description": "Maximum wall-clock time in minutes",
+          "maximum": 720,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "dependencies": {
+      "description": "External files, services, and APIs required",
+      "properties": {
+        "apis": {
+          "description": "External APIs or integrations needed",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "files": {
+          "description": "File paths or glob patterns the spec depends on",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "services": {
+          "description": "External services required (redis, postgres, docker, etc.)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "intent": {
+      "description": "High-level description of what needs to be done",
+      "minLength": 20,
+      "type": "string"
+    },
+    "invariants": {
+      "description": "Constraints that must remain true throughout execution",
+      "items": {
+        "minLength": 10,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Custom key-value metadata",
+      "type": "object"
+    },
+    "name": {
+      "description": "Unique identifier for the spec, lowercase alphanumeric with hyphens",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+      "type": "string"
+    },
+    "out_of_scope": {
+      "description": "Explicitly excluded items or areas",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "routing_hint": {
+      "description": "LLM model suggestions for planning and execution",
+      "properties": {
+        "execution_model": {
+          "description": "Model to use for execution phase",
+          "type": "string"
+        },
+        "planning_model": {
+          "description": "Model to use for planning phase",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "spec_version": {
+      "description": "The spec format version, must be '1'",
+      "pattern": "^1$",
+      "type": "string"
+    },
+    "test_contracts": {
+      "description": "Commands to verify acceptance criteria and invariants",
+      "items": {
+        "properties": {
+          "command": {
+            "description": "Command to execute for testing",
+            "type": "string"
+          },
+          "maps_to": {
+            "description": "Acceptance criteria or invariant indices this test validates",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Name of the test contract",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "command"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "spec_version",
+    "name",
+    "intent"
+  ],
+  "title": "AetronyxSpec",
+  "type": "object"
+}

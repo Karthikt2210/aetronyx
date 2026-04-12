@@ -1,4 +1,4 @@
-.PHONY: dev build test lint fmt clean release-snapshot ui-install ui-dev ui-build
+.PHONY: dev build test bats lint fmt clean release-snapshot ui-install ui-dev ui-build
 
 BINARY_NAME := aetronyx
 BUILD_DIR   := dist
@@ -17,9 +17,14 @@ build:
 	@mkdir -p $(BUILD_DIR)
 	go build $(GO_FLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) .
 
-## test: run all Go tests with race detector
+## test: run all Go tests with race detector and integration tests
 test:
 	go test -race -count=1 ./...
+	go test -race -count=1 ./test/integration/...
+
+## bats: run Bats CLI tests (requires bats-core installed)
+bats: build
+	bats test/cli/
 
 ## lint: run golangci-lint
 lint:

@@ -1,0 +1,6 @@
+spec_version: "1"
+name: hello-world
+intent: |
+  Create a file called hello.txt in the workspace root containing exactly
+  the text "Hello from Aetronyx!" followed by a newline. Do not create
+  any other files.

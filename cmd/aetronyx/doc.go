@@ -1,2 +1,2 @@
-// Package main implements the Aetronyx CLI entry point and command dispatcher.
-package main
+// Package aetronyx implements the Aetronyx CLI entry point and command dispatcher.
+package aetronyx

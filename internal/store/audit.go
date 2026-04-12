@@ -78,6 +78,35 @@ func (s *Store) GetAuditEvents(ctx context.Context, runID string) ([]AuditEvent,
 	return events, nil
 }
 
+// GetLastAuditEvent retrieves the most recent audit event for a run (by ULID order).
+// Returns nil, nil when no events exist for the run yet.
+func (s *Store) GetLastAuditEvent(ctx context.Context, runID string) (*AuditEvent, error) {
+	query := `
+		SELECT id, run_id, iteration_id, ts, event_type, actor,
+		       payload_json, payload_hash, prev_hash, signature,
+		       otel_trace_id, otel_span_id
+		FROM audit_events
+		WHERE run_id = ?
+		ORDER BY id DESC
+		LIMIT 1
+	`
+	row := s.db.QueryRowContext(ctx, query, runID)
+
+	var e AuditEvent
+	err := row.Scan(
+		&e.ID, &e.RunID, &e.IterationID, &e.Ts, &e.EventType, &e.Actor,
+		&e.PayloadJSON, &e.PayloadHash, &e.PrevHash, &e.Signature,
+		&e.OtelTraceID, &e.OtelSpanID,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetLastAuditEvent: %w", err)
+	}
+	return &e, nil
+}
+
 // GetAuditEventByID retrieves a single audit event by ID.
 func (s *Store) GetAuditEventByID(ctx context.Context, id string) (*AuditEvent, error) {
 	query := `

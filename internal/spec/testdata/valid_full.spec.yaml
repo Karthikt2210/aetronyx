@@ -1,0 +1,41 @@
+spec_version: "1"
+name: refactor-auth-middleware
+intent: Refactor the authentication middleware to use JWT tokens and improve the security posture of the login flow.
+budget:
+  max_cost_usd: 5.00
+  max_iterations: 10
+  max_wall_time_minutes: 60
+  max_tokens: 100000
+acceptance_criteria:
+  - given: A user with valid credentials
+    when: They submit a login request
+    then: A JWT token is returned with a 200 status code
+  - given: A user with invalid credentials
+    when: They submit a login request
+    then: A 401 response is returned with no token
+invariants:
+  - The JWT secret must never be logged or exposed in responses
+  - All database queries must use parameterized statements
+out_of_scope:
+  - User registration flow
+  - Password reset functionality
+dependencies:
+  files: []
+  services: []
+  apis: []
+test_contracts:
+  - name: unit-tests
+    command: go test ./...
+    maps_to:
+      - acceptance_criteria[0]
+      - acceptance_criteria[1]
+approval_gates:
+  - after: planning
+    before: iteration
+    required: true
+routing_hint:
+  planning_model: claude-sonnet-4-6
+  execution_model: claude-haiku-4-5-20251001
+metadata:
+  owner: security-team
+  ticket: AUTH-123

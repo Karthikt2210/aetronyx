@@ -1,0 +1,10 @@
+spec_version: "1"
+name: bad-budget-spec
+intent: This intent is long enough to satisfy the minimum length requirement for the validator.
+budget:
+  max_cost_usd: 5.00
+  max_iterations: 600
+acceptance_criteria:
+  - given: A valid condition
+    when: An action occurs
+    then: An expected result is produced

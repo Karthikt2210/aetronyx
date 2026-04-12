@@ -1,0 +1,7 @@
+spec_version: "1"
+name: "INVALID NAME!!"
+intent: This intent is long enough to satisfy the minimum length requirement for the validator.
+acceptance_criteria:
+  - given: A valid condition
+    when: An action occurs
+    then: An expected result is produced

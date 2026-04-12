@@ -1,0 +1,61 @@
+package spec
+
+// DefaultTemplate returns a minimal but annotated spec YAML template.
+func DefaultTemplate() []byte {
+	return []byte(`# Aetronyx Spec v1
+# This template defines an AI agent task with governance, budget, and acceptance criteria.
+
+spec_version: "1"
+
+# Name: kebab-case identifier, 1-64 chars, alphanumeric and hyphens
+name: example-task
+
+# Intent: 20-80 char description of what this task accomplishes
+intent: Describe the goal of this task in one sentence.
+
+# Budget constraints (all optional, but at least one recommended)
+budget:
+  max_cost_usd: 10.0            # Maximum spend in USD
+  max_iterations: 50            # Max planning/execution loops
+  max_wall_time_minutes: 60     # Max runtime in minutes
+  max_tokens: 100000            # Max total tokens (input + output + cache)
+
+# Acceptance Criteria: minimum required (each entry: given/when/then)
+acceptance_criteria:
+  - given: the agent receives valid input
+    when: it processes the request
+    then: it returns a valid response
+
+# Invariants: properties that must hold true throughout execution (optional)
+invariants:
+  - The agent never modifies files outside the workspace
+
+# Out of Scope: things the agent should not attempt (optional, recommended)
+out_of_scope:
+  - Modifying system files or configuration
+
+# Dependencies: external resources required (optional)
+dependencies:
+  files: []                     # Relative paths to required files
+  services: []                  # Services (redis, postgres, docker)
+  apis: []                       # External API names
+
+# Test Contracts: how to verify success (optional, recommended)
+test_contracts:
+  - name: unit tests
+    command: go test ./...
+    maps_to:
+      - acceptance_criteria[0]
+
+# Approval Gates: points in the loop where a human must approve (optional)
+approval_gates: []
+
+# Routing Hint: which models to use for planning and execution (optional)
+routing_hint:
+  planning_model: claude-opus-4-6
+  execution_model: claude-sonnet-4-6
+
+# Metadata: arbitrary key-value data (optional)
+metadata: {}
+`)
+}

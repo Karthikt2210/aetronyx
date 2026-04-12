@@ -6,13 +6,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// spec command is now defined in spec.go as specRootCmd
 var specCmd = &cobra.Command{
 	Use:   "spec",
 	Short: "Manage specs",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Fprintln(cmd.OutOrStderr(), "spec: not implemented in m1")
-		return &ExitError{Code: 2}
-	},
 }
 
 var checkpointCmd = &cobra.Command{

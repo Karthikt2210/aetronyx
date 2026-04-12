@@ -15,9 +15,11 @@ var validateCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		logger := getLogger(cmd)
-		cfg := getConfig(cmd)
 
 		specPath := args[0]
+		format, _ := cmd.Flags().GetString("format")
+		strict, _ := cmd.Flags().GetBool("strict")
+		workspace := getWorkspace(cmd)
 
 		// Expand path
 		expanded, err := expandPath(specPath)
@@ -25,25 +27,53 @@ var validateCmd = &cobra.Command{
 			return fmt.Errorf("failed to expand path: %w", err)
 		}
 
-		// Parse spec
-		_, err = spec.Parse(expanded)
-		if err != nil {
-			if cfg.Logging.Format == "json" {
-				errResp := map[string]interface{}{
-					"error": map[string]string{
-						"code":    "spec.invalid",
-						"message": err.Error(),
-					},
-				}
-				json.NewEncoder(cmd.OutOrStdout()).Encode(errResp)
+		// M2: hardcoded adapter list for validation
+		adapters := []string{
+			"claude-opus-4-6",
+			"claude-sonnet-4-6",
+			"claude-haiku-4-5-20251001",
+			"gpt-4.1",
+			"gpt-4.1-mini",
+			"o4-mini",
+		}
+
+		// Validate spec file
+		result := spec.ValidateFile(expanded, workspace, adapters)
+
+		if format == "json" {
+			json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+		} else {
+			// Text output
+			if result.OK && len(result.Warnings) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "ok")
 			} else {
-				fmt.Fprintf(cmd.OutOrStderr(), "error: spec invalid: %v\n", err)
+				for _, e := range result.Errors {
+					// Format: [FATAL] rule: message
+					fmt.Fprintf(cmd.OutOrStdout(), "[FATAL] %s: %s\n", e.Rule, e.Message)
+				}
+				for _, w := range result.Warnings {
+					// Format: [WARN] rule: message
+					fmt.Fprintf(cmd.OutOrStdout(), "[WARN] %s: %s\n", w.Rule, w.Message)
+				}
 			}
+		}
+
+		logger.Info("spec validation completed", "path", expanded, "ok", result.OK, "errors", len(result.Errors), "warnings", len(result.Warnings))
+
+		// Exit code logic
+		if len(result.Errors) > 0 {
+			return &ExitError{Code: 10}
+		}
+		if strict && len(result.Warnings) > 0 {
 			return &ExitError{Code: 10}
 		}
 
-		logger.Info("spec validation passed", "path", expanded)
-		fmt.Fprintln(cmd.OutOrStdout(), "ok")
 		return nil
 	},
+}
+
+func init() {
+	validateCmd.Flags().String("format", "text", "output format (text|json)")
+	validateCmd.Flags().Bool("strict", false, "treat warnings as errors")
+	validateCmd.Flags().String("workspace", "", "workspace root")
 }

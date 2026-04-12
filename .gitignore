@@ -34,6 +34,16 @@ ui/.nuxt/
 # Aetronyx runtime
 .aetronyx/
 
+# Claude Code — never expose to public repo
+.claude/
+.claudeignore
+CLAUDE.md
+STATE.md
+
+# Internal planning — not for public consumption
+prd/
+prompts/
+
 # macOS
 .DS_Store
 .AppleDouble

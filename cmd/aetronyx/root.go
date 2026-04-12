@@ -52,16 +52,16 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("failed to get working directory: %w", err)
 		}
 
-		// Build flags map for config loader
+		// Build flags map for config loader (map CLI flags to config keys)
 		flags := make(map[string]string)
 		if cfgPath != "" {
 			flags["config"] = cfgPath
 		}
 		if logLevel != "" {
-			flags["log-level"] = logLevel
+			flags["logging.level"] = logLevel
 		}
 		if logFormat != "" {
-			flags["log-format"] = logFormat
+			flags["logging.format"] = logFormat
 		}
 		if workspace != "" {
 			flags["workspace"] = workspace

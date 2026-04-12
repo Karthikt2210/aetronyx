@@ -37,4 +37,4 @@ Out of scope:
 
 ## Future compliance documentation
 
-Detailed security controls and compliance mappings will be published in [`docs/compliance/`](./docs/compliance/) starting in Milestone 5.
+Detailed security controls and compliance mappings will be published in [`docs/compliance/`](./docs/compliance/) as the project matures.

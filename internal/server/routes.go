@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/karthikcodes/aetronyx/internal/config"
@@ -9,15 +10,21 @@ import (
 
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
-	cfg     *config.Config
-	version string
+	cfg       *config.Config
+	version   string
+	authToken string
+	bus       *EventBus
+	log       *slog.Logger
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(cfg *config.Config, version string) *Handler {
+func NewHandler(cfg *config.Config, version, authToken string, bus *EventBus, log *slog.Logger) *Handler {
 	return &Handler{
-		cfg:     cfg,
-		version: version,
+		cfg:       cfg,
+		version:   version,
+		authToken: authToken,
+		bus:       bus,
+		log:       log,
 	}
 }
 

@@ -23,32 +23,22 @@ func newTestServer(t *testing.T) *httptest.Server {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	token := "test-token-12345"
 	version := "v0.1.0-m1"
+	bus := NewEventBus(log)
 
-	handler := NewHandler(cfg, version)
+	handler := NewHandler(cfg, version, token, bus, log)
 
 	mux := http.NewServeMux()
 
-	var apiChain http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/health":
-			handler.Health(w, r)
-		case "/api/v1/version":
-			handler.Version(w, r)
-		default:
-			writeError(w, http.StatusNotFound, "http.not_found", "Endpoint not found")
-		}
-	})
-
-	apiChain = BearerMiddleware(token)(apiChain)
-	apiChain = LoggingMiddleware(log)(apiChain)
-	apiChain = RecoveryMiddleware(log)(apiChain)
-
-	mux.Handle("/api/v1/", apiChain)
+	mux.Handle("GET /api/v1/health", BearerMiddleware(token)(http.HandlerFunc(handler.Health)))
+	mux.Handle("GET /api/v1/version", BearerMiddleware(token)(http.HandlerFunc(handler.Version)))
+	mux.Handle("/api/v1/", BearerMiddleware(token)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "http.not_found", "Endpoint not found")
+	})))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "http.not_found", "Endpoint not found")
 	})
 
-	return httptest.NewServer(mux)
+	return httptest.NewServer(LoggingMiddleware(log)(RecoveryMiddleware(log)(mux)))
 }
 
 func TestHealthEndpoint(t *testing.T) {

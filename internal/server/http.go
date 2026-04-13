@@ -19,39 +19,49 @@ type Server struct {
 
 // New creates and configures a new HTTP server.
 func New(cfg *config.Config, token, version string, log *slog.Logger) *Server {
-	handler := NewHandler(cfg, version)
+	bus := NewEventBus(log)
+	handler := NewHandler(cfg, version, token, bus, log)
 
-	// Create mux with routes
 	mux := http.NewServeMux()
 
-	// Middleware chain: recovery → logging → bearer auth
-	var apiChain http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/health":
-			handler.Health(w, r)
-		case "/api/v1/version":
-			handler.Version(w, r)
-		default:
-			writeError(w, http.StatusNotFound, "http.not_found", "Endpoint not found")
-		}
-	})
+	// protect wraps a handler with bearer/cookie auth + logging + recovery.
+	protect := func(h http.HandlerFunc) http.Handler {
+		var chain http.Handler = http.HandlerFunc(h)
+		chain = BearerMiddleware(token)(chain)
+		chain = LoggingMiddleware(log)(chain)
+		chain = RecoveryMiddleware(log)(chain)
+		return chain
+	}
 
-	apiChain = BearerMiddleware(token)(apiChain)
-	apiChain = LoggingMiddleware(log)(apiChain)
-	apiChain = RecoveryMiddleware(log)(apiChain)
+	// logged wraps a handler with logging + recovery only (no auth).
+	logged := func(h http.HandlerFunc) http.Handler {
+		var chain http.Handler = http.HandlerFunc(h)
+		chain = LoggingMiddleware(log)(chain)
+		chain = RecoveryMiddleware(log)(chain)
+		return chain
+	}
 
-	mux.Handle("/api/v1/", apiChain)
+	// Unauthenticated auth endpoints.
+	mux.Handle("POST /api/v1/auth/handshake", logged(handler.AuthHandshake))
+	mux.Handle("POST /api/v1/auth/logout", logged(handler.AuthLogout))
 
-	// 404 for non-API paths
+	// Protected endpoints.
+	mux.Handle("GET /api/v1/health", protect(handler.Health))
+	mux.Handle("GET /api/v1/version", protect(handler.Version))
+	mux.Handle("GET /api/v1/runs/{id}/stream", protect(handler.StreamRun))
+	mux.Handle("GET /api/v1/ws", protect(handler.WebSocket))
+
+	// SPA fallback.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "http.not_found", "Endpoint not found")
 	})
 
 	httpSrv := &http.Server{
-		Addr:           net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)),
-		Handler:        mux,
-		ReadTimeout:    30 * time.Second,
-		WriteTimeout:   30 * time.Second,
+		Addr:    net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)),
+		Handler: mux,
+		ReadTimeout: 30 * time.Second,
+		// WriteTimeout is intentionally unset (0) to support SSE streaming responses.
+		// TODO(M4): introduce per-handler timeouts via http.TimeoutHandler for non-streaming routes.
 		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
@@ -67,7 +77,6 @@ func (s *Server) Start() error {
 	cfg := s.httpSrv
 	host := cfg.Addr
 
-	// Check if binding to non-loopback
 	if !isLoopback(host) {
 		s.log.Warn("server listening on non-loopback address (insecure for untrusted networks)",
 			slog.String("address", host),
@@ -78,7 +87,6 @@ func (s *Server) Start() error {
 		slog.String("address", host),
 	)
 
-	// ListenAndServe blocks until an error occurs
 	if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("server error: %w", err)
 	}
